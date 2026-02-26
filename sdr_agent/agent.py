@@ -214,6 +214,53 @@ class SDRAgent:
 
         return added
 
+    def prospect_at_company(
+        self,
+        domain: str,
+        icp_name: str = "default",
+        count: int = 5,
+    ) -> list[Lead]:
+        """Find contacts at a specific company domain matching ICP titles.
+
+        Uses the ICP's target titles to filter, but scopes the search to
+        the given company domain.
+        """
+        icp = self.db.get_icp(icp_name)
+        if not icp:
+            raise ValueError(
+                f"ICP '{icp_name}' not found. Create one first with set-icp."
+            )
+
+        # Create a temporary ICP scoped to this company's domain
+        company_icp = ICP(
+            name=f"_temp_{domain}",
+            titles=icp.titles,
+            seniorities=icp.seniorities,
+            keywords=[domain],
+            locations=icp.locations,
+        )
+
+        people = self.prospector.search(company_icp, per_page=count, page=1)
+        leads = self.prospector.people_to_leads(people)
+
+        # Deduplicate against existing leads
+        existing_emails = {
+            lead.email.lower()
+            for lead in self.db.list_leads()
+            if lead.email
+        }
+
+        added: list[Lead] = []
+        for lead in leads:
+            if lead.email and lead.email.lower() in existing_emails:
+                continue
+            self.db.save_lead(lead)
+            added.append(lead)
+            if lead.email:
+                existing_emails.add(lead.email.lower())
+
+        return added
+
     # -- Research --
 
     def research_lead(self, lead_id: str) -> Lead:
@@ -479,6 +526,135 @@ class SDRAgent:
 
         return results
 
+    def full_pipeline(
+        self,
+        icp_name: str = "default",
+        count: int = 5,
+        channels: list[str] | None = None,
+        callback: object | None = None,
+    ) -> dict:
+        """End-to-end pipeline: prospect → enrich → research → score → outreach.
+
+        Args:
+            icp_name: ICP to use for prospecting.
+            count: Number of leads to prospect.
+            channels: Outreach channels ('email', 'linkedin'). Defaults to both.
+            callback: Optional callable(step, lead_name, detail) for progress updates.
+
+        Returns a summary dict with all results.
+        """
+        if channels is None:
+            channels = ["email", "linkedin"]
+
+        def _notify(step: str, name: str = "", detail: str = ""):
+            if callback and callable(callback):
+                callback(step, name, detail)
+
+        results: dict = {
+            "prospected": [],
+            "enriched": [],
+            "researched": [],
+            "outreach": [],
+            "errors": [],
+        }
+
+        # Step 1: Prospect
+        _notify("prospect_start", detail=f"Finding {count} leads matching ICP '{icp_name}'")
+        try:
+            new_leads = self.prospect(icp_name=icp_name, count=count)
+            results["prospected"] = [
+                {"id": l.id, "name": l.name, "company": l.company}
+                for l in new_leads
+            ]
+            _notify("prospect_done", detail=f"Found {len(new_leads)} new leads")
+        except Exception as e:
+            results["errors"].append({"step": "prospect", "error": str(e)})
+            _notify("prospect_error", detail=str(e))
+            return results
+
+        if not new_leads:
+            return results
+
+        # Steps 2-5: For each lead: enrich → research → score → outreach
+        for lead in new_leads:
+            lead_name = f"{lead.name} @ {lead.company}"
+
+            # Step 2: Enrich
+            _notify("enrich_start", name=lead_name)
+            try:
+                lead, enriched_fields = self.enrich_lead(lead.id)
+                results["enriched"].append({
+                    "id": lead.id,
+                    "name": lead.name,
+                    "fields": list(enriched_fields.keys()),
+                })
+                _notify("enrich_done", name=lead_name, detail=f"{len(enriched_fields)} fields")
+            except Exception as e:
+                results["errors"].append({
+                    "step": "enrich", "lead": lead_name, "error": str(e),
+                })
+                _notify("enrich_error", name=lead_name, detail=str(e))
+                # Continue — outreach can still work with partial data
+
+            # Step 3: Research
+            _notify("research_start", name=lead_name)
+            try:
+                lead = self.research_lead(lead.id)
+                results["researched"].append({
+                    "id": lead.id, "name": lead.name,
+                })
+                _notify("research_done", name=lead_name)
+            except Exception as e:
+                results["errors"].append({
+                    "step": "research", "lead": lead_name, "error": str(e),
+                })
+                _notify("research_error", name=lead_name, detail=str(e))
+
+            # Step 4: Score (already auto-scored by enrich/research, but ensure)
+            if lead.score == 0:
+                try:
+                    self.score_lead(lead.id)
+                except Exception:
+                    pass
+
+            # Step 5: Outreach
+            outreach_result: dict = {
+                "id": lead.id, "name": lead.name, "email_sent": False,
+                "linkedin_generated": False,
+            }
+
+            if "email" in channels and lead.email:
+                _notify("email_start", name=lead_name)
+                try:
+                    email_result = self.send_email(lead.id)
+                    outreach_result["email_sent"] = True
+                    outreach_result["email_to"] = email_result["sent_to"]
+                    outreach_result["email_subject"] = email_result["message"].subject
+                    _notify("email_done", name=lead_name, detail=email_result["sent_to"])
+                except Exception as e:
+                    results["errors"].append({
+                        "step": "send_email", "lead": lead_name, "error": str(e),
+                    })
+                    _notify("email_error", name=lead_name, detail=str(e))
+
+            if "linkedin" in channels:
+                _notify("linkedin_start", name=lead_name)
+                try:
+                    li_msg = self.send_linkedin(lead.id, "connect")
+                    outreach_result["linkedin_generated"] = True
+                    outreach_result["linkedin_message"] = li_msg.body
+                    outreach_result["linkedin_url"] = lead.linkedin_url or ""
+                    _notify("linkedin_done", name=lead_name)
+                except Exception as e:
+                    results["errors"].append({
+                        "step": "linkedin", "lead": lead_name, "error": str(e),
+                    })
+                    _notify("linkedin_error", name=lead_name, detail=str(e))
+
+            results["outreach"].append(outreach_result)
+
+        return results
+
     # -- Company Management --
 
     def add_company(
@@ -600,6 +776,176 @@ class SDRAgent:
             return result
         except Exception:
             return None
+
+    # -- Full Pipelines --
+
+    def company_full_pipeline(
+        self,
+        icp_name: str = "default",
+        count: int = 5,
+        contacts_per_company: int = 3,
+        channels: list[str] | None = None,
+        callback: object | None = None,
+    ) -> dict:
+        """End-to-end company pipeline:
+        prospect companies → enrich → score → find contacts → enrich contacts → outreach.
+
+        Args:
+            icp_name: ICP to use for prospecting.
+            count: Number of companies to prospect.
+            contacts_per_company: Number of contacts to find at each company.
+            channels: Outreach channels for contacts ('email', 'linkedin').
+            callback: Optional callable(step, name, detail) for progress updates.
+
+        Returns a summary dict.
+        """
+        if channels is None:
+            channels = ["email", "linkedin"]
+
+        def _notify(step: str, name: str = "", detail: str = ""):
+            if callback and callable(callback):
+                callback(step, name, detail)
+
+        results: dict = {
+            "companies_prospected": [],
+            "companies_enriched": [],
+            "contacts_found": [],
+            "outreach": [],
+            "errors": [],
+        }
+
+        # Step 1: Prospect companies
+        _notify("prospect_companies_start", detail=f"Finding {count} companies matching ICP '{icp_name}'")
+        try:
+            new_companies = self.prospect_companies(icp_name=icp_name, count=count)
+            results["companies_prospected"] = [
+                {"id": c.id, "name": c.name, "domain": c.domain}
+                for c in new_companies
+            ]
+            _notify("prospect_companies_done", detail=f"Found {len(new_companies)} new companies")
+        except Exception as e:
+            results["errors"].append({"step": "prospect_companies", "error": str(e)})
+            _notify("prospect_companies_error", detail=str(e))
+            return results
+
+        if not new_companies:
+            return results
+
+        # Step 2: For each company: enrich → score → find contacts → outreach contacts
+        for company in new_companies:
+            company_name = company.name
+
+            # Enrich company
+            _notify("enrich_company_start", name=company_name)
+            try:
+                company, enriched_fields = self.enrich_company(company.id)
+                results["companies_enriched"].append({
+                    "id": company.id,
+                    "name": company.name,
+                    "fields": list(enriched_fields.keys()),
+                })
+                _notify("enrich_company_done", name=company_name, detail=f"{len(enriched_fields)} fields")
+            except Exception as e:
+                results["errors"].append({
+                    "step": "enrich_company", "company": company_name, "error": str(e),
+                })
+                _notify("enrich_company_error", name=company_name, detail=str(e))
+
+            # Score company
+            if company.score == 0:
+                try:
+                    self.score_company(company.id)
+                except Exception:
+                    pass
+
+            # Find contacts at this company
+            domain = company.domain
+            if not domain:
+                _notify("contacts_skip", name=company_name, detail="No domain — skipping contact search")
+                results["errors"].append({
+                    "step": "find_contacts", "company": company_name,
+                    "error": "No domain available to search for contacts",
+                })
+                continue
+
+            _notify("find_contacts_start", name=company_name, detail=f"Finding {contacts_per_company} contacts")
+            try:
+                contacts = self.prospect_at_company(
+                    domain=domain, icp_name=icp_name, count=contacts_per_company,
+                )
+                results["contacts_found"].extend([
+                    {"id": l.id, "name": l.name, "company": company_name}
+                    for l in contacts
+                ])
+                _notify("find_contacts_done", name=company_name, detail=f"Found {len(contacts)} contacts")
+            except Exception as e:
+                results["errors"].append({
+                    "step": "find_contacts", "company": company_name, "error": str(e),
+                })
+                _notify("find_contacts_error", name=company_name, detail=str(e))
+                continue
+
+            # For each contact: enrich → research → outreach
+            for lead in contacts:
+                lead_name = f"{lead.name} @ {company_name}"
+
+                # Enrich contact
+                _notify("enrich_contact_start", name=lead_name)
+                try:
+                    lead, enriched = self.enrich_lead(lead.id)
+                    _notify("enrich_contact_done", name=lead_name, detail=f"{len(enriched)} fields")
+                except Exception as e:
+                    results["errors"].append({
+                        "step": "enrich_contact", "lead": lead_name, "error": str(e),
+                    })
+                    _notify("enrich_contact_error", name=lead_name, detail=str(e))
+
+                # Research contact
+                _notify("research_contact_start", name=lead_name)
+                try:
+                    lead = self.research_lead(lead.id)
+                    _notify("research_contact_done", name=lead_name)
+                except Exception as e:
+                    results["errors"].append({
+                        "step": "research_contact", "lead": lead_name, "error": str(e),
+                    })
+                    _notify("research_contact_error", name=lead_name, detail=str(e))
+
+                # Outreach
+                outreach_result: dict = {
+                    "id": lead.id, "name": lead.name, "company": company_name,
+                    "email_sent": False, "linkedin_generated": False,
+                }
+
+                if "email" in channels and lead.email:
+                    try:
+                        email_result = self.send_email(lead.id)
+                        outreach_result["email_sent"] = True
+                        outreach_result["email_to"] = email_result["sent_to"]
+                        outreach_result["email_subject"] = email_result["message"].subject
+                        _notify("email_done", name=lead_name, detail=email_result["sent_to"])
+                    except Exception as e:
+                        results["errors"].append({
+                            "step": "send_email", "lead": lead_name, "error": str(e),
+                        })
+                        _notify("email_error", name=lead_name, detail=str(e))
+
+                if "linkedin" in channels:
+                    try:
+                        li_msg = self.send_linkedin(lead.id, "connect")
+                        outreach_result["linkedin_generated"] = True
+                        outreach_result["linkedin_message"] = li_msg.body
+                        outreach_result["linkedin_url"] = lead.linkedin_url or ""
+                        _notify("linkedin_done", name=lead_name)
+                    except Exception as e:
+                        results["errors"].append({
+                            "step": "linkedin", "lead": lead_name, "error": str(e),
+                        })
+                        _notify("linkedin_error", name=lead_name, detail=str(e))
+
+                results["outreach"].append(outreach_result)
+
+        return results
 
     # -- Pipeline Overview --
 

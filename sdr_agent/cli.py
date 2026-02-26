@@ -519,6 +519,251 @@ def auto_outreach(
     agent.close()
 
 
+@app.command(name="lead-pipeline")
+def lead_pipeline(
+    icp_name: str = typer.Option("default", help="ICP name to prospect from"),
+    count: int = typer.Option(5, help="Number of leads to prospect"),
+    email: bool = typer.Option(True, help="Send email via Resend"),
+    linkedin: bool = typer.Option(True, help="Generate LinkedIn messages"),
+):
+    """Full end-to-end pipeline: prospect → enrich → research → score → outreach.
+
+    Finds new leads matching your ICP, enriches them, researches them,
+    and sends outreach (email via Resend + LinkedIn connection requests).
+    """
+    import webbrowser
+
+    agent = _get_agent()
+
+    channels = []
+    if email:
+        channels.append("email")
+    if linkedin:
+        channels.append("linkedin")
+
+    def progress_callback(step: str, name: str = "", detail: str = ""):
+        if step == "prospect_start":
+            console.print(f"\n[bold]Step 1: Prospecting[/bold] — {detail}")
+        elif step == "prospect_done":
+            console.print(f"  [green]✓[/green] {detail}")
+        elif step == "prospect_error":
+            console.print(f"  [red]✗[/red] {detail}")
+        elif step == "enrich_start":
+            console.print(f"\n  [bold]Enriching:[/bold] {name}")
+        elif step == "enrich_done":
+            console.print(f"    [green]✓[/green] Enriched ({detail})")
+        elif step == "enrich_error":
+            console.print(f"    [red]✗[/red] Enrich failed: {detail}")
+        elif step == "research_start":
+            console.print(f"    Researching...")
+        elif step == "research_done":
+            console.print(f"    [green]✓[/green] Researched")
+        elif step == "research_error":
+            console.print(f"    [red]✗[/red] Research failed: {detail}")
+        elif step == "email_done":
+            console.print(f"    [green]✓[/green] Email sent to {detail}")
+        elif step == "email_error":
+            console.print(f"    [red]✗[/red] Email failed: {detail}")
+        elif step == "linkedin_done":
+            console.print(f"    [green]✓[/green] LinkedIn message generated")
+        elif step == "linkedin_error":
+            console.print(f"    [red]✗[/red] LinkedIn failed: {detail}")
+
+    console.print(Panel(
+        f"ICP: [bold]{icp_name}[/bold]  |  Count: [bold]{count}[/bold]  |  "
+        f"Channels: [bold]{', '.join(channels) or 'none'}[/bold]",
+        title="Full Pipeline",
+        border_style="cyan",
+    ))
+
+    results = agent.full_pipeline(
+        icp_name=icp_name,
+        count=count,
+        channels=channels,
+        callback=progress_callback,
+    )
+
+    # Summary
+    console.print("\n" + "─" * 50)
+    console.print(Panel(
+        f"Prospected: [bold]{len(results['prospected'])}[/bold]\n"
+        f"Enriched:   [bold]{len(results['enriched'])}[/bold]\n"
+        f"Researched: [bold]{len(results['researched'])}[/bold]\n"
+        f"Errors:     [bold]{len(results['errors'])}[/bold]",
+        title="Pipeline Summary",
+        border_style="green" if not results["errors"] else "yellow",
+    ))
+
+    # Show outreach results
+    for item in results["outreach"]:
+        name = item["name"]
+        parts = []
+        if item.get("email_sent"):
+            parts.append(f"email → {item.get('email_to', '?')}")
+        if item.get("linkedin_generated"):
+            parts.append("LinkedIn ready")
+        status = ", ".join(parts) if parts else "no outreach sent"
+        console.print(f"  {name}: {status}")
+
+    # Offer to open LinkedIn profiles for leads with generated messages
+    linkedin_leads = [
+        item for item in results["outreach"]
+        if item.get("linkedin_generated") and item.get("linkedin_url")
+    ]
+
+    if linkedin_leads:
+        console.print(f"\n[bold]{len(linkedin_leads)} LinkedIn messages ready.[/bold]")
+        console.print("[dim]Opening each profile — paste the message (already copied) and send.[/dim]\n")
+
+        for item in linkedin_leads:
+            _copy_to_clipboard(item["linkedin_message"])
+            console.print(
+                f"  [blue]Opening {item['name']}[/blue] — message copied to clipboard"
+            )
+            webbrowser.open(item["linkedin_url"])
+            if item != linkedin_leads[-1]:
+                typer.confirm("  Ready for next?", default=True)
+
+    if results["errors"]:
+        console.print(f"\n[yellow]{len(results['errors'])} errors occurred:[/yellow]")
+        for err in results["errors"]:
+            console.print(f"  [red]✗[/red] {err['step']}"
+                          f"{' (' + err['lead'] + ')' if 'lead' in err else ''}: "
+                          f"{err['error']}")
+
+    agent.close()
+
+
+@app.command(name="org-pipeline")
+def org_pipeline(
+    icp_name: str = typer.Option("default", help="ICP name to prospect from"),
+    count: int = typer.Option(5, help="Number of companies to prospect"),
+    contacts: int = typer.Option(3, help="Number of contacts to find per company"),
+    email: bool = typer.Option(True, help="Send email via Resend"),
+    linkedin: bool = typer.Option(True, help="Generate LinkedIn messages"),
+):
+    """Full company pipeline: prospect orgs → enrich → score → find contacts → outreach.
+
+    Finds companies matching your ICP, enriches them, finds decision-makers
+    at each company, then runs outreach (email + LinkedIn) to those contacts.
+    """
+    import webbrowser
+
+    agent = _get_agent()
+
+    channels = []
+    if email:
+        channels.append("email")
+    if linkedin:
+        channels.append("linkedin")
+
+    def progress_callback(step: str, name: str = "", detail: str = ""):
+        if step == "prospect_companies_start":
+            console.print(f"\n[bold]Step 1: Prospecting Companies[/bold] — {detail}")
+        elif step == "prospect_companies_done":
+            console.print(f"  [green]✓[/green] {detail}")
+        elif step == "prospect_companies_error":
+            console.print(f"  [red]✗[/red] {detail}")
+        elif step == "enrich_company_start":
+            console.print(f"\n  [bold]Enriching company:[/bold] {name}")
+        elif step == "enrich_company_done":
+            console.print(f"    [green]✓[/green] Enriched ({detail})")
+        elif step == "enrich_company_error":
+            console.print(f"    [red]✗[/red] Enrich failed: {detail}")
+        elif step == "find_contacts_start":
+            console.print(f"    Finding contacts at {name}... ({detail})")
+        elif step == "find_contacts_done":
+            console.print(f"    [green]✓[/green] {detail}")
+        elif step == "find_contacts_error":
+            console.print(f"    [red]✗[/red] Contact search failed: {detail}")
+        elif step == "contacts_skip":
+            console.print(f"    [yellow]⊘[/yellow] {name}: {detail}")
+        elif step == "enrich_contact_start":
+            console.print(f"\n      [bold]Contact:[/bold] {name}")
+        elif step == "enrich_contact_done":
+            console.print(f"        [green]✓[/green] Enriched ({detail})")
+        elif step == "enrich_contact_error":
+            console.print(f"        [red]✗[/red] Enrich failed: {detail}")
+        elif step == "research_contact_done":
+            console.print(f"        [green]✓[/green] Researched")
+        elif step == "research_contact_error":
+            console.print(f"        [red]✗[/red] Research failed: {detail}")
+        elif step == "email_done":
+            console.print(f"        [green]✓[/green] Email sent to {detail}")
+        elif step == "email_error":
+            console.print(f"        [red]✗[/red] Email failed: {detail}")
+        elif step == "linkedin_done":
+            console.print(f"        [green]✓[/green] LinkedIn message generated")
+        elif step == "linkedin_error":
+            console.print(f"        [red]✗[/red] LinkedIn failed: {detail}")
+
+    console.print(Panel(
+        f"ICP: [bold]{icp_name}[/bold]  |  Companies: [bold]{count}[/bold]  |  "
+        f"Contacts/co: [bold]{contacts}[/bold]  |  Channels: [bold]{', '.join(channels) or 'none'}[/bold]",
+        title="Organization Pipeline",
+        border_style="cyan",
+    ))
+
+    results = agent.company_full_pipeline(
+        icp_name=icp_name,
+        count=count,
+        contacts_per_company=contacts,
+        channels=channels,
+        callback=progress_callback,
+    )
+
+    # Summary
+    console.print("\n" + "─" * 50)
+    console.print(Panel(
+        f"Companies found:    [bold]{len(results['companies_prospected'])}[/bold]\n"
+        f"Companies enriched: [bold]{len(results['companies_enriched'])}[/bold]\n"
+        f"Contacts found:     [bold]{len(results['contacts_found'])}[/bold]\n"
+        f"Outreach sent:      [bold]{len(results['outreach'])}[/bold]\n"
+        f"Errors:             [bold]{len(results['errors'])}[/bold]",
+        title="Org Pipeline Summary",
+        border_style="green" if not results["errors"] else "yellow",
+    ))
+
+    # Outreach details
+    for item in results["outreach"]:
+        name = f"{item['name']} @ {item.get('company', '?')}"
+        parts = []
+        if item.get("email_sent"):
+            parts.append(f"email → {item.get('email_to', '?')}")
+        if item.get("linkedin_generated"):
+            parts.append("LinkedIn ready")
+        status = ", ".join(parts) if parts else "no outreach"
+        console.print(f"  {name}: {status}")
+
+    # Open LinkedIn profiles
+    linkedin_leads = [
+        item for item in results["outreach"]
+        if item.get("linkedin_generated") and item.get("linkedin_url")
+    ]
+
+    if linkedin_leads:
+        console.print(f"\n[bold]{len(linkedin_leads)} LinkedIn messages ready.[/bold]")
+        console.print("[dim]Opening each profile — paste the message (already copied) and send.[/dim]\n")
+
+        for item in linkedin_leads:
+            _copy_to_clipboard(item["linkedin_message"])
+            console.print(
+                f"  [blue]Opening {item['name']}[/blue] — message copied to clipboard"
+            )
+            webbrowser.open(item["linkedin_url"])
+            if item != linkedin_leads[-1]:
+                typer.confirm("  Ready for next?", default=True)
+
+    if results["errors"]:
+        console.print(f"\n[yellow]{len(results['errors'])} errors occurred:[/yellow]")
+        for err in results["errors"]:
+            lead_info = f" ({err['lead']})" if "lead" in err else ""
+            company_info = f" ({err['company']})" if "company" in err else ""
+            console.print(f"  [red]✗[/red] {err['step']}{company_info}{lead_info}: {err['error']}")
+
+    agent.close()
+
+
 # -- Response & Qualification Commands --
 
 @app.command()
