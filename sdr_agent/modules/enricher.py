@@ -64,6 +64,8 @@ class LeadEnricher:
             headers={
                 "Content-Type": "application/json",
                 "Cache-Control": "no-cache",
+                "X-Api-Key": self.api_key,
+                "User-Agent": "FunnelFiller/0.1",
             },
             method="POST",
         )
