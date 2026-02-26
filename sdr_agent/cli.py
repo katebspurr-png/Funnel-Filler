@@ -114,6 +114,117 @@ def search(query: str = typer.Argument(..., help="Search query")):
     agent.close()
 
 
+# -- Prospecting Commands --
+
+@app.command(name="set-icp")
+def set_icp(
+    name: str = typer.Option("default", help="Name for this ICP profile"),
+    titles: str = typer.Option("", help="Job titles, comma-separated (e.g. 'VP Sales,Head of Marketing')"),
+    seniorities: str = typer.Option("", help="Seniority levels, comma-separated (e.g. 'director,vp,c_suite')"),
+    industries: str = typer.Option("", help="Industries, comma-separated (e.g. 'SaaS,FinTech')"),
+    company_sizes: str = typer.Option("", help="Employee ranges, comma-separated (e.g. '1,50;51,200;201,1000')"),
+    locations: str = typer.Option("", help="Locations, comma-separated (e.g. 'San Francisco,New York')"),
+    keywords: str = typer.Option("", help="Keywords, comma-separated (e.g. 'AI,machine learning')"),
+):
+    """Define your Ideal Customer Profile for automated prospecting."""
+    agent = _get_agent()
+
+    def split(val: str) -> list[str]:
+        return [v.strip() for v in val.split(",") if v.strip()] if val else []
+
+    # Company sizes use semicolons as delimiters since ranges contain commas
+    size_list = [v.strip() for v in company_sizes.split(";")] if company_sizes else []
+
+    icp = agent.set_icp(
+        name=name,
+        titles=split(titles),
+        seniorities=split(seniorities),
+        industries=split(industries),
+        company_sizes=size_list,
+        locations=split(locations),
+        keywords=split(keywords),
+    )
+
+    console.print(Panel(f"[bold]{icp.name}[/bold]", title="ICP Saved"))
+    if icp.titles:
+        console.print(f"  [cyan]Titles:[/cyan] {', '.join(icp.titles)}")
+    if icp.seniorities:
+        console.print(f"  [cyan]Seniorities:[/cyan] {', '.join(icp.seniorities)}")
+    if icp.industries:
+        console.print(f"  [cyan]Industries:[/cyan] {', '.join(icp.industries)}")
+    if icp.company_sizes:
+        console.print(f"  [cyan]Company sizes:[/cyan] {', '.join(icp.company_sizes)}")
+    if icp.locations:
+        console.print(f"  [cyan]Locations:[/cyan] {', '.join(icp.locations)}")
+    if icp.keywords:
+        console.print(f"  [cyan]Keywords:[/cyan] {', '.join(icp.keywords)}")
+
+    console.print("\n[dim]Run 'funnel-filler prospect' to find matching leads.[/dim]")
+    agent.close()
+
+
+@app.command(name="show-icp")
+def show_icp(
+    name: str = typer.Option("default", help="ICP profile name"),
+):
+    """Show the current Ideal Customer Profile."""
+    agent = _get_agent()
+    icp = agent.get_icp(name)
+
+    if not icp:
+        console.print(f"[yellow]No ICP named '{name}' found.[/yellow]")
+        console.print("[dim]Create one with 'funnel-filler set-icp'.[/dim]")
+        agent.close()
+        return
+
+    console.print(Panel(f"[bold]{icp.name}[/bold]", title="Ideal Customer Profile"))
+    if icp.titles:
+        console.print(f"  [cyan]Titles:[/cyan] {', '.join(icp.titles)}")
+    if icp.seniorities:
+        console.print(f"  [cyan]Seniorities:[/cyan] {', '.join(icp.seniorities)}")
+    if icp.industries:
+        console.print(f"  [cyan]Industries:[/cyan] {', '.join(icp.industries)}")
+    if icp.company_sizes:
+        console.print(f"  [cyan]Company sizes:[/cyan] {', '.join(icp.company_sizes)}")
+    if icp.locations:
+        console.print(f"  [cyan]Locations:[/cyan] {', '.join(icp.locations)}")
+    if icp.keywords:
+        console.print(f"  [cyan]Keywords:[/cyan] {', '.join(icp.keywords)}")
+    agent.close()
+
+
+@app.command()
+def prospect(
+    icp_name: str = typer.Option("default", "--icp", help="ICP profile to use"),
+    count: int = typer.Option(25, help="Number of prospects to find (max 100)"),
+    page: int = typer.Option(1, help="Page number for pagination"),
+):
+    """Find new leads matching your ICP via Apollo."""
+    agent = _get_agent()
+    with console.status("Searching Apollo for prospects..."):
+        leads = agent.prospect(icp_name, count=min(count, 100), page=page)
+
+    if not leads:
+        console.print("[yellow]No new prospects found (or all matches are already in your pipeline).[/yellow]")
+        agent.close()
+        return
+
+    table = Table(title=f"Found {len(leads)} New Prospects")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", style="bold")
+    table.add_column("Title")
+    table.add_column("Company")
+    table.add_column("Email")
+
+    for lead in leads:
+        table.add_row(lead.id, lead.name, lead.title, lead.company, lead.email)
+
+    console.print(table)
+    console.print(f"\n[green]{len(leads)} leads added to pipeline.[/green]")
+    console.print("[dim]Use 'funnel-filler enrich <id>' or 'funnel-filler research <id>' to learn more.[/dim]")
+    agent.close()
+
+
 # -- Enrichment Commands --
 
 @app.command()

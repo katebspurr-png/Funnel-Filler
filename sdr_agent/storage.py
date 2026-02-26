@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import Lead, LeadStatus, Message, Sequence, SequenceStep, Channel, MessageType
+from .models import ICP, Lead, LeadStatus, Message, Sequence, SequenceStep, Channel, MessageType
 
 
 class Database:
@@ -54,6 +54,18 @@ class Database:
                 created_at TEXT,
                 is_inbound INTEGER DEFAULT 0,
                 FOREIGN KEY (lead_id) REFERENCES leads(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS icps (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                titles TEXT DEFAULT '[]',
+                seniorities TEXT DEFAULT '[]',
+                industries TEXT DEFAULT '[]',
+                company_sizes TEXT DEFAULT '[]',
+                locations TEXT DEFAULT '[]',
+                keywords TEXT DEFAULT '[]',
+                created_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS sequences (
@@ -145,6 +157,35 @@ class Database:
             d["is_inbound"] = bool(d["is_inbound"])
             results.append(Message.from_dict(d))
         return results
+
+    # -- ICP operations --
+
+    def save_icp(self, icp: ICP) -> ICP:
+        data = icp.to_dict()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO icps
+            (id, name, titles, seniorities, industries, company_sizes,
+             locations, keywords, created_at)
+            VALUES (:id, :name, :titles, :seniorities, :industries,
+                    :company_sizes, :locations, :keywords, :created_at)""",
+            data,
+        )
+        self.conn.commit()
+        return icp
+
+    def get_icp(self, name: str = "default") -> ICP | None:
+        row = self.conn.execute(
+            "SELECT * FROM icps WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            return None
+        return ICP.from_dict(dict(row))
+
+    def list_icps(self) -> list[ICP]:
+        rows = self.conn.execute(
+            "SELECT * FROM icps ORDER BY created_at DESC"
+        ).fetchall()
+        return [ICP.from_dict(dict(r)) for r in rows]
 
     # -- Sequence operations --
 

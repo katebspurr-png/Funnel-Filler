@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 
 from .config import Config
-from .models import Channel, Lead, LeadStatus, Message, MessageType
+from .models import ICP, Channel, Lead, LeadStatus, Message, MessageType
 from .modules.enricher import LeadEnricher
 from .modules.outreach import OutreachEngine
+from .modules.prospector import Prospector
 from .modules.qualifier import LeadQualifier
 from .modules.researcher import LeadResearcher
 from .modules.scheduler import MeetingScheduler
@@ -31,6 +32,7 @@ class SDRAgent:
         self.config = config or Config.from_env()
         self.db = Database(self.config.db_path)
         self.enricher = LeadEnricher(self.config)
+        self.prospector = Prospector(self.config)
         self.researcher = LeadResearcher(self.config)
         self.outreach = OutreachEngine(self.config)
         self.qualifier = LeadQualifier(self.config)
@@ -108,6 +110,68 @@ class SDRAgent:
             self.db.save_lead(lead)
 
         return lead, updated_fields
+
+    # -- Prospecting --
+
+    def set_icp(
+        self,
+        name: str = "default",
+        titles: list[str] | None = None,
+        seniorities: list[str] | None = None,
+        industries: list[str] | None = None,
+        company_sizes: list[str] | None = None,
+        locations: list[str] | None = None,
+        keywords: list[str] | None = None,
+    ) -> ICP:
+        """Create or update an Ideal Customer Profile."""
+        icp = ICP(
+            name=name,
+            titles=titles or [],
+            seniorities=seniorities or [],
+            industries=industries or [],
+            company_sizes=company_sizes or [],
+            locations=locations or [],
+            keywords=keywords or [],
+        )
+        self.db.save_icp(icp)
+        return icp
+
+    def get_icp(self, name: str = "default") -> ICP | None:
+        return self.db.get_icp(name)
+
+    def prospect(
+        self,
+        icp_name: str = "default",
+        count: int = 25,
+        page: int = 1,
+    ) -> list[Lead]:
+        """Find new leads matching the saved ICP and add them to the pipeline."""
+        icp = self.db.get_icp(icp_name)
+        if not icp:
+            raise ValueError(
+                f"ICP '{icp_name}' not found. Create one first with set-icp."
+            )
+
+        people = self.prospector.search(icp, per_page=count, page=page)
+        leads = self.prospector.people_to_leads(people)
+
+        # Save each lead, skipping duplicates by email
+        existing_emails = {
+            lead.email.lower()
+            for lead in self.db.list_leads()
+            if lead.email
+        }
+
+        added: list[Lead] = []
+        for lead in leads:
+            if lead.email and lead.email.lower() in existing_emails:
+                continue
+            self.db.save_lead(lead)
+            added.append(lead)
+            if lead.email:
+                existing_emails.add(lead.email.lower())
+
+        return added
 
     # -- Research --
 

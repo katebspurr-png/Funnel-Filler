@@ -115,3 +115,33 @@ class SequenceStep:
     template_name: str = ""
     completed: bool = False
     completed_at: str = ""
+
+
+@dataclass
+class ICP:
+    """Ideal Customer Profile — criteria for automated prospecting."""
+
+    name: str = "default"
+    titles: list[str] = field(default_factory=list)
+    seniorities: list[str] = field(default_factory=list)
+    industries: list[str] = field(default_factory=list)
+    company_sizes: list[str] = field(default_factory=list)
+    locations: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
+    id: str = field(default_factory=lambda: uuid4().hex[:12])
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        for key in ("titles", "seniorities", "industries", "company_sizes",
+                     "locations", "keywords"):
+            d[key] = json.dumps(d[key])
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ICP:
+        for key in ("titles", "seniorities", "industries", "company_sizes",
+                     "locations", "keywords"):
+            if isinstance(d.get(key), str):
+                d[key] = json.loads(d[key])
+        return cls(**d)
