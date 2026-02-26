@@ -401,6 +401,29 @@ def send_email(lead_id: str = typer.Argument(..., help="Lead ID to email")):
     agent.close()
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy text to system clipboard. Returns True on success."""
+    import platform
+    import subprocess
+
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        elif system == "Linux":
+            subprocess.run(
+                ["xclip", "-selection", "clipboard"],
+                input=text.encode(), check=True,
+            )
+        elif system == "Windows":
+            subprocess.run(["clip"], input=text.encode(), check=True)
+        else:
+            return False
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+
+
 @app.command(name="send-linkedin")
 def send_linkedin(
     lead_id: str = typer.Argument(..., help="Lead ID"),
@@ -408,7 +431,9 @@ def send_linkedin(
         "connect", help="Type: 'connect' for connection request, 'message' for DM"
     ),
 ):
-    """Generate a LinkedIn outreach message for a lead."""
+    """Generate a LinkedIn outreach message, copy to clipboard, and open their profile."""
+    import webbrowser
+
     agent = _get_agent()
     with console.status("Generating LinkedIn message..."):
         message = agent.send_linkedin(lead_id, message_type)
@@ -432,9 +457,17 @@ def send_linkedin(
             border_style="blue",
         ))
 
+    # Copy message to clipboard
+    if _copy_to_clipboard(message.body):
+        console.print("\n[green]Copied to clipboard![/green]")
+    else:
+        console.print("\n[yellow]Could not copy to clipboard.[/yellow] Copy the message above manually.")
+
+    # Open LinkedIn profile in browser
     if linkedin_url:
-        console.print(f"\n[bold]LinkedIn profile:[/bold] {linkedin_url}")
-        console.print("[dim]Open the link above, then paste the message.[/dim]")
+        console.print(f"[bold]Opening:[/bold] {linkedin_url}")
+        webbrowser.open(linkedin_url)
+        console.print("[dim]Click 'Connect' → 'Add a note' → paste (Cmd+V) → Send[/dim]")
     else:
         console.print("\n[yellow]No LinkedIn URL found.[/yellow] Enrich the lead to get their profile URL.")
 
