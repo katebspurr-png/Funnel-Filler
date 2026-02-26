@@ -11,7 +11,7 @@ from ..config import Config
 from ..models import ICP, Lead
 
 
-APOLLO_PEOPLE_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/search"
+APOLLO_PEOPLE_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 
 
 class Prospector:
