@@ -380,6 +380,112 @@ def run_sequences():
     agent.close()
 
 
+# -- Send Outreach Commands --
+
+@app.command(name="send-email")
+def send_email(lead_id: str = typer.Argument(..., help="Lead ID to email")):
+    """Generate and send a personalized outreach email via Resend."""
+    agent = _get_agent()
+    with console.status("Generating and sending email via Resend..."):
+        result = agent.send_email(lead_id)
+
+    message = result["message"]
+    console.print(Panel(
+        f"[bold]To:[/bold] {result['sent_to']}\n"
+        f"[bold]Subject:[/bold] {message.subject}\n\n"
+        f"{message.body}",
+        title="Email Sent via Resend",
+        border_style="green",
+    ))
+    console.print(f"\n[green]Sent![/green] Resend ID: {result['resend_id']}")
+    agent.close()
+
+
+@app.command(name="send-linkedin")
+def send_linkedin(
+    lead_id: str = typer.Argument(..., help="Lead ID"),
+    message_type: str = typer.Option(
+        "connect", help="Type: 'connect' for connection request, 'message' for DM"
+    ),
+):
+    """Generate a LinkedIn outreach message for a lead."""
+    agent = _get_agent()
+    with console.status("Generating LinkedIn message..."):
+        message = agent.send_linkedin(lead_id, message_type)
+
+    lead = agent.get_lead(lead_id)
+    name = lead.name if lead else lead_id
+    linkedin_url = lead.linkedin_url if lead else ""
+
+    if message_type == "connect":
+        title = f"LinkedIn Connection Request for {name}"
+        console.print(Panel(
+            f"{message.body}\n\n[dim]({len(message.body)} / 300 chars)[/dim]",
+            title=title,
+            border_style="blue",
+        ))
+    else:
+        title = f"LinkedIn Message for {name}"
+        console.print(Panel(
+            message.body,
+            title=title,
+            border_style="blue",
+        ))
+
+    if linkedin_url:
+        console.print(f"\n[bold]LinkedIn profile:[/bold] {linkedin_url}")
+        console.print("[dim]Open the link above, then paste the message.[/dim]")
+    else:
+        console.print("\n[yellow]No LinkedIn URL found.[/yellow] Enrich the lead to get their profile URL.")
+
+    agent.close()
+
+
+@app.command(name="auto-outreach")
+def auto_outreach(
+    lead_id: str = typer.Argument(..., help="Lead ID to run full outreach on"),
+    email: bool = typer.Option(True, help="Send email via Resend"),
+    linkedin: bool = typer.Option(True, help="Generate LinkedIn message"),
+):
+    """Full automated outreach: enrich → research → score → send email → generate LinkedIn message."""
+    agent = _get_agent()
+
+    channels = []
+    if email:
+        channels.append("email")
+    if linkedin:
+        channels.append("linkedin")
+
+    with console.status("Running automated outreach pipeline..."):
+        result = agent.auto_outreach(lead_id, channels)
+
+    lead = agent.get_lead(lead_id)
+    name = lead.name if lead else lead_id
+
+    console.print(Panel(f"[bold]{name}[/bold]", title="Auto-Outreach Complete"))
+
+    for action in result["actions"]:
+        step = action["step"]
+        status = action["status"]
+
+        if status == "error":
+            console.print(f"  [red]✗[/red] {step}: {action['error']}")
+        elif step == "enrich":
+            console.print(f"  [green]✓[/green] Enriched ({len(action.get('fields_updated', []))} fields)")
+        elif step == "research":
+            console.print(f"  [green]✓[/green] Researched")
+        elif step == "send_email":
+            console.print(f"  [green]✓[/green] Email sent to {action['sent_to']}")
+            console.print(f"      Subject: {action['subject']}")
+        elif step == "linkedin_connect":
+            console.print(f"  [green]✓[/green] LinkedIn connection request generated")
+            console.print(f"      Message: {action['message'][:80]}...")
+            if action.get("profile_url") and action["profile_url"] != "Not available":
+                console.print(f"      Profile: {action['profile_url']}")
+
+    agent.close()
+
+
 # -- Response & Qualification Commands --
 
 @app.command()

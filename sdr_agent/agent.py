@@ -10,9 +10,11 @@ from .modules.company_enricher import CompanyEnricher
 from .modules.company_prospector import CompanyProspector
 from .modules.company_scorer import CompanyScorer
 from .modules.enricher import LeadEnricher
+from .modules.linkedin_outreach import LinkedInOutreach
 from .modules.outreach import OutreachEngine
 from .modules.prospector import Prospector
 from .modules.qualifier import LeadQualifier
+from .modules.resend_sender import ResendSender
 from .modules.researcher import LeadResearcher
 from .modules.scorer import LeadScorer
 from .modules.scheduler import MeetingScheduler
@@ -46,6 +48,8 @@ class SDRAgent:
         self.company_enricher = CompanyEnricher(self.config)
         self.company_prospector = CompanyProspector(self.config)
         self.company_scorer = CompanyScorer(self.config)
+        self.resend_sender = ResendSender(self.config)
+        self.linkedin = LinkedInOutreach(self.config)
 
     # -- Lead Management --
 
@@ -329,6 +333,151 @@ class SDRAgent:
         self.db.save_message(message)
         self.db.update_lead_status(lead_id, LeadStatus.MEETING_BOOKED)
         return message
+
+    # -- Send Outreach --
+
+    def send_email(self, lead_id: str) -> dict:
+        """Generate and send an outreach email to a lead via Resend.
+
+        Returns dict with message details and Resend response.
+        """
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        if not lead.email:
+            raise ValueError(
+                f"Lead {lead.name} has no email. Enrich first to get their email."
+            )
+
+        # Generate the outreach message
+        message = self.outreach.generate_initial_outreach(lead, Channel.EMAIL)
+
+        # Send via Resend
+        resend_result = self.resend_sender.send_outreach_message(lead, message)
+
+        # Save message with sent timestamp
+        message.sent_at = datetime.now().isoformat()
+        self.db.save_message(message)
+
+        # Update lead status
+        if lead.status in (LeadStatus.NEW, LeadStatus.OUTREACH_PENDING):
+            self.db.update_lead_status(lead_id, LeadStatus.CONTACTED)
+
+        return {
+            "message": message,
+            "resend_id": resend_result.get("id", ""),
+            "sent_to": lead.email,
+        }
+
+    def send_linkedin(self, lead_id: str, message_type: str = "connect") -> Message:
+        """Generate a LinkedIn outreach message for a lead.
+
+        message_type: 'connect' for connection request, 'message' for DM.
+        Returns the generated Message (to be sent manually via LinkedIn).
+        """
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        previous = [
+            m for m in self.db.get_messages_for_lead(lead_id)
+            if m.channel == Channel.LINKEDIN
+        ]
+
+        if message_type == "connect":
+            message = self.linkedin.generate_connection_request(lead)
+        else:
+            message = self.linkedin.generate_message(lead, previous or None)
+
+        self.db.save_message(message)
+        return message
+
+    def auto_outreach(
+        self, lead_id: str, channels: list[str] | None = None
+    ) -> dict:
+        """Full automated outreach pipeline for a lead:
+        enrich → score → generate & send email → generate LinkedIn message.
+
+        Returns a summary dict of all actions taken.
+        """
+        if channels is None:
+            channels = ["email", "linkedin"]
+
+        results: dict = {"lead_id": lead_id, "actions": []}
+
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        # Step 1: Enrich if not already enriched
+        if not lead.research.get("apollo"):
+            try:
+                lead, enriched = self.enrich_lead(lead_id)
+                if enriched:
+                    results["actions"].append({
+                        "step": "enrich",
+                        "status": "success",
+                        "fields_updated": list(enriched.keys()),
+                    })
+            except Exception as e:
+                results["actions"].append({
+                    "step": "enrich",
+                    "status": "error",
+                    "error": str(e),
+                })
+
+        # Step 2: Research if not already done
+        if not lead.research.get("summary"):
+            try:
+                lead = self.research_lead(lead_id)
+                results["actions"].append({
+                    "step": "research",
+                    "status": "success",
+                })
+            except Exception as e:
+                results["actions"].append({
+                    "step": "research",
+                    "status": "error",
+                    "error": str(e),
+                })
+
+        # Step 3: Send email via Resend
+        if "email" in channels and lead.email:
+            try:
+                email_result = self.send_email(lead_id)
+                results["actions"].append({
+                    "step": "send_email",
+                    "status": "success",
+                    "sent_to": email_result["sent_to"],
+                    "subject": email_result["message"].subject,
+                    "resend_id": email_result["resend_id"],
+                })
+            except Exception as e:
+                results["actions"].append({
+                    "step": "send_email",
+                    "status": "error",
+                    "error": str(e),
+                })
+
+        # Step 4: Generate LinkedIn message
+        if "linkedin" in channels:
+            try:
+                li_msg = self.send_linkedin(lead_id, "connect")
+                results["actions"].append({
+                    "step": "linkedin_connect",
+                    "status": "generated",
+                    "message": li_msg.body,
+                    "profile_url": lead.linkedin_url or "Not available",
+                })
+            except Exception as e:
+                results["actions"].append({
+                    "step": "linkedin_connect",
+                    "status": "error",
+                    "error": str(e),
+                })
+
+        return results
 
     # -- Company Management --
 

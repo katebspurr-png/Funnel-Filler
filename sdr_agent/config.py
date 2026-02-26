@@ -53,6 +53,8 @@ class Config:
 
     anthropic_api_key: str = ""
     apollo_api_key: str = ""
+    resend_api_key: str = ""
+    resend_from_email: str = ""
     model: str = "claude-sonnet-4-6"
     db_path: str = "funnel_filler.db"
     company: CompanyProfile = field(default_factory=CompanyProfile)
@@ -66,6 +68,8 @@ class Config:
         return cls(
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             apollo_api_key=os.getenv("APOLLO_API_KEY", ""),
+            resend_api_key=os.getenv("RESEND_API_KEY", ""),
+            resend_from_email=os.getenv("RESEND_FROM_EMAIL", ""),
             model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
             db_path=os.getenv("DB_PATH", "funnel_filler.db"),
             company=CompanyProfile(
