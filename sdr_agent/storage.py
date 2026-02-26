@@ -6,7 +6,10 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import ICP, Lead, LeadStatus, Message, Sequence, SequenceStep, Channel, MessageType
+from .models import (
+    ICP, Lead, LeadStatus, Message, Sequence, SequenceStep, Channel, MessageType,
+    Company, CompanyStatus,
+)
 
 
 class Database:
@@ -76,6 +79,29 @@ class Database:
                 is_active INTEGER DEFAULT 1,
                 created_at TEXT,
                 FOREIGN KEY (lead_id) REFERENCES leads(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS companies (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                domain TEXT,
+                industry TEXT,
+                employee_count INTEGER DEFAULT 0,
+                location TEXT,
+                description TEXT,
+                founded_year INTEGER DEFAULT 0,
+                annual_revenue TEXT,
+                technologies TEXT DEFAULT '[]',
+                keywords TEXT DEFAULT '[]',
+                linkedin_url TEXT,
+                website_url TEXT,
+                notes TEXT,
+                status TEXT DEFAULT 'new',
+                score INTEGER DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT,
+                research TEXT DEFAULT '{}',
+                tags TEXT DEFAULT '[]'
             );
         """)
         self.conn.commit()
@@ -186,6 +212,62 @@ class Database:
             "SELECT * FROM icps ORDER BY created_at DESC"
         ).fetchall()
         return [ICP.from_dict(dict(r)) for r in rows]
+
+    # -- Company operations --
+
+    def save_company(self, company: Company) -> Company:
+        data = company.to_dict()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO companies
+            (id, name, domain, industry, employee_count, location, description,
+             founded_year, annual_revenue, technologies, keywords, linkedin_url,
+             website_url, notes, status, score, created_at, updated_at, research, tags)
+            VALUES (:id, :name, :domain, :industry, :employee_count, :location,
+                    :description, :founded_year, :annual_revenue, :technologies,
+                    :keywords, :linkedin_url, :website_url, :notes, :status, :score,
+                    :created_at, :updated_at, :research, :tags)""",
+            data,
+        )
+        self.conn.commit()
+        return company
+
+    def get_company(self, company_id: str) -> Company | None:
+        row = self.conn.execute(
+            "SELECT * FROM companies WHERE id = ?", (company_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return Company.from_dict(dict(row))
+
+    def list_companies(self, status: CompanyStatus | None = None) -> list[Company]:
+        if status:
+            rows = self.conn.execute(
+                "SELECT * FROM companies WHERE status = ? ORDER BY updated_at DESC",
+                (status.value,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM companies ORDER BY updated_at DESC"
+            ).fetchall()
+        return [Company.from_dict(dict(r)) for r in rows]
+
+    def update_company_status(self, company_id: str, status: CompanyStatus) -> None:
+        from datetime import datetime
+
+        self.conn.execute(
+            "UPDATE companies SET status = ?, updated_at = ? WHERE id = ?",
+            (status.value, datetime.now().isoformat(), company_id),
+        )
+        self.conn.commit()
+
+    def search_companies(self, query: str) -> list[Company]:
+        rows = self.conn.execute(
+            """SELECT * FROM companies
+            WHERE name LIKE ? OR domain LIKE ? OR industry LIKE ? OR description LIKE ?
+            ORDER BY updated_at DESC""",
+            (f"%{query}%",) * 4,
+        ).fetchall()
+        return [Company.from_dict(dict(r)) for r in rows]
 
     # -- Sequence operations --
 

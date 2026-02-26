@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .agent import SDRAgent
-from .models import Channel, LeadStatus
+from .models import Channel, CompanyStatus, LeadStatus
 
 app = typer.Typer(
     name="funnel-filler",
@@ -494,6 +494,291 @@ def show(lead_id: str = typer.Argument(..., help="Lead ID")):
             direction = "INBOUND" if msg.is_inbound else "OUTBOUND"
             console.print(f"  [{direction}] {msg.message_type.value}: {msg.subject}")
 
+    agent.close()
+
+
+# -- Company Commands --
+
+@app.command(name="add-company")
+def add_company(
+    name: str = typer.Argument(..., help="Company name"),
+    domain: str = typer.Option("", help="Company domain (e.g. acme.com)"),
+    industry: str = typer.Option("", help="Industry"),
+    employees: int = typer.Option(0, help="Number of employees"),
+    location: str = typer.Option("", help="Location (e.g. San Francisco, CA)"),
+    website: str = typer.Option("", help="Website URL"),
+    linkedin: str = typer.Option("", help="LinkedIn company URL"),
+    notes: str = typer.Option("", help="Additional notes"),
+):
+    """Add a new company to the pipeline."""
+    agent = _get_agent()
+    company = agent.add_company(
+        name, domain, industry, employees, location,
+        website_url=website, linkedin_url=linkedin, notes=notes,
+    )
+    console.print(f"[green]Added company:[/green] {company.name} ({company.id})")
+    agent.close()
+
+
+@app.command(name="list-companies")
+def list_companies_cmd(
+    status: str = typer.Option("", help="Filter by status (new, enriched, qualified, target, disqualified)"),
+):
+    """List all companies in the pipeline."""
+    agent = _get_agent()
+    company_status = CompanyStatus(status) if status else None
+    companies = agent.list_companies(company_status)
+
+    if not companies:
+        console.print("[dim]No companies found.[/dim]")
+        agent.close()
+        return
+
+    table = Table(title="Companies Pipeline")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", style="bold")
+    table.add_column("Domain")
+    table.add_column("Industry")
+    table.add_column("Employees", justify="right")
+    table.add_column("Status")
+    table.add_column("Score", justify="right")
+
+    status_colors = {
+        "new": "white",
+        "researching": "cyan",
+        "enriched": "yellow",
+        "qualified": "bold green",
+        "target": "bold magenta",
+        "disqualified": "red",
+    }
+
+    for c in companies:
+        color = status_colors.get(c.status.value, "white")
+        table.add_row(
+            c.id,
+            c.name,
+            c.domain,
+            c.industry,
+            str(c.employee_count) if c.employee_count else "",
+            f"[{color}]{c.status.value}[/{color}]",
+            str(c.score),
+        )
+
+    console.print(table)
+    agent.close()
+
+
+@app.command(name="show-company")
+def show_company(company_id: str = typer.Argument(..., help="Company ID")):
+    """Show detailed info for a specific company."""
+    agent = _get_agent()
+    company = agent.get_company(company_id)
+
+    if not company:
+        console.print(f"[red]Company {company_id} not found.[/red]")
+        agent.close()
+        return
+
+    info = Text()
+    info.append(f"Name: {company.name}\n", style="bold")
+    info.append(f"Domain: {company.domain}\n")
+    info.append(f"Industry: {company.industry}\n")
+    info.append(f"Employees: {company.employee_count}\n")
+    info.append(f"Location: {company.location}\n")
+    info.append(f"Website: {company.website_url}\n")
+    info.append(f"LinkedIn: {company.linkedin_url}\n")
+    info.append(f"Revenue: {company.annual_revenue}\n")
+    info.append(f"Founded: {company.founded_year}\n")
+    info.append(f"Status: {company.status.value}\n")
+    info.append(f"Score: {company.score}/100\n")
+    info.append(f"Created: {company.created_at}\n")
+
+    if company.description:
+        info.append(f"\n{company.description}\n")
+
+    console.print(Panel(info, title=f"Company {company.id}", border_style="blue"))
+
+    if company.technologies:
+        console.print(f"\n[bold]Technologies:[/bold] {', '.join(company.technologies)}")
+
+    if company.keywords:
+        console.print(f"[bold]Keywords:[/bold] {', '.join(company.keywords)}")
+
+    if company.research:
+        console.print("\n[bold]Research:[/bold]")
+        for k, v in company.research.items():
+            console.print(f"  [cyan]{k}:[/cyan] {v}")
+
+    agent.close()
+
+
+@app.command(name="search-companies")
+def search_companies_cmd(query: str = typer.Argument(..., help="Search query")):
+    """Search companies by name, domain, industry, or description."""
+    agent = _get_agent()
+    companies = agent.search_companies(query)
+    if not companies:
+        console.print("[dim]No companies found.[/dim]")
+    else:
+        for c in companies:
+            console.print(f"  {c.id}  {c.name} ({c.domain}) — [{c.status.value}]")
+    agent.close()
+
+
+@app.command(name="enrich-company")
+def enrich_company(company_id: str = typer.Argument(..., help="Company ID to enrich")):
+    """Enrich a company with real data from Apollo.io (industry, employees, revenue, tech stack, etc.)."""
+    agent = _get_agent()
+    with console.status("Enriching company via Apollo..."):
+        company, updated = agent.enrich_company(company_id)
+
+    if not updated:
+        console.print(f"[yellow]No new data found for {company.name}.[/yellow]")
+        console.print("[dim]Tip: ensure the company has a name or domain for best results.[/dim]")
+        agent.close()
+        return
+
+    console.print(Panel(f"[bold]{company.name}[/bold] ({company.domain})", title="Company Enrichment Complete"))
+
+    # Show updated core fields (exclude apollo_data and auto_score)
+    core_fields = {k: v for k, v in updated.items() if k not in ("apollo_data", "auto_score")}
+    if core_fields:
+        console.print("[bold]Updated fields:[/bold]")
+        for field_name, value in core_fields.items():
+            if isinstance(value, list):
+                console.print(f"  [green]{field_name}:[/green] {', '.join(str(v) for v in value)}")
+            else:
+                console.print(f"  [green]{field_name}:[/green] {value}")
+
+    # Show extra Apollo data
+    apollo_data = updated.get("apollo_data", {})
+    if apollo_data:
+        console.print("\n[bold]Additional data from Apollo:[/bold]")
+        for key, value in apollo_data.items():
+            if isinstance(value, list):
+                display = ", ".join(str(v) for v in value[:10])
+                if len(value) > 10:
+                    display += f" (+{len(value) - 10} more)"
+                console.print(f"  [cyan]{key}:[/cyan] {display}")
+            else:
+                console.print(f"  [cyan]{key}:[/cyan] {value}")
+
+    # Show auto-score if it ran
+    auto_score = updated.get("auto_score")
+    if auto_score:
+        s = auto_score["score"]
+        console.print(f"\n[bold]Auto-score:[/bold] {s}/100 — {auto_score.get('reasoning', '')}")
+
+    agent.close()
+
+
+@app.command(name="prospect-companies")
+def prospect_companies(
+    icp_name: str = typer.Option("default", "--icp", help="ICP profile to use"),
+    count: int = typer.Option(25, help="Number of companies to find (max 100)"),
+    page: int = typer.Option(1, help="Page number for pagination"),
+):
+    """Find new companies matching your ICP via Apollo."""
+    agent = _get_agent()
+    with console.status("Searching Apollo for companies..."):
+        companies = agent.prospect_companies(icp_name, count=min(count, 100), page=page)
+
+    if not companies:
+        console.print("[yellow]No new companies found (or all matches are already in your pipeline).[/yellow]")
+        agent.close()
+        return
+
+    table = Table(title=f"Found {len(companies)} New Companies")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", style="bold")
+    table.add_column("Domain")
+    table.add_column("Industry")
+    table.add_column("Employees", justify="right")
+    table.add_column("Location")
+
+    for c in companies:
+        table.add_row(
+            c.id, c.name, c.domain, c.industry,
+            str(c.employee_count) if c.employee_count else "",
+            c.location,
+        )
+
+    console.print(table)
+    console.print(f"\n[green]{len(companies)} companies added to pipeline.[/green]")
+    console.print("[dim]Use 'funnel-filler enrich-company <id>' to get more details.[/dim]")
+    agent.close()
+
+
+@app.command(name="score-company")
+def score_company_cmd(company_id: str = typer.Argument(..., help="Company ID to score")):
+    """Score a company using AI analysis + rule-based adjustments (0-100)."""
+    agent = _get_agent()
+    with console.status("Scoring company..."):
+        result = agent.score_company(company_id)
+
+    company = agent.get_company(company_id)
+    name = company.name if company else company_id
+
+    # Score color
+    s = result["score"]
+    if s >= 80:
+        color = "bold green"
+    elif s >= 60:
+        color = "green"
+    elif s >= 40:
+        color = "yellow"
+    else:
+        color = "red"
+
+    console.print(Panel(
+        f"[{color}]{s}/100[/{color}]  (AI: {result['ai_score']} + Rules: {result['rule_adjustment']:+d})",
+        title=f"Score for {name}",
+    ))
+
+    if result.get("reasoning"):
+        console.print(f"\n[bold]Reasoning:[/bold] {result['reasoning']}")
+
+    if result.get("strengths"):
+        console.print("\n[bold]Strengths:[/bold]")
+        for item in result["strengths"]:
+            console.print(f"  [green]+[/green] {item}")
+
+    if result.get("concerns"):
+        console.print("\n[bold]Concerns:[/bold]")
+        for item in result["concerns"]:
+            console.print(f"  [red]-[/red] {item}")
+
+    if result.get("rule_details"):
+        console.print("\n[bold]Rule adjustments:[/bold]")
+        for rule in result["rule_details"]:
+            sign = "+" if rule["points"] > 0 else ""
+            console.print(f"  [dim]{sign}{rule['points']}[/dim] {rule['rule']}")
+
+    agent.close()
+
+
+@app.command(name="company-pipeline")
+def company_pipeline():
+    """Show a summary of the company pipeline."""
+    agent = _get_agent()
+    summary = agent.company_pipeline_summary()
+
+    if not summary:
+        console.print("[dim]Company pipeline is empty. Add companies with 'funnel-filler add-company'.[/dim]")
+        agent.close()
+        return
+
+    table = Table(title="Company Pipeline Summary")
+    table.add_column("Status", style="bold")
+    table.add_column("Count", justify="right")
+
+    total = 0
+    for status, count in summary.items():
+        table.add_row(status, str(count))
+        total += count
+
+    table.add_row("[bold]Total[/bold]", f"[bold]{total}[/bold]")
+    console.print(table)
     agent.close()
 
 

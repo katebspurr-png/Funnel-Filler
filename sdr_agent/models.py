@@ -117,6 +117,57 @@ class SequenceStep:
     completed_at: str = ""
 
 
+class CompanyStatus(str, Enum):
+    NEW = "new"
+    RESEARCHING = "researching"
+    ENRICHED = "enriched"
+    QUALIFIED = "qualified"
+    TARGET = "target"
+    DISQUALIFIED = "disqualified"
+
+
+@dataclass
+class Company:
+    """A target company/organization."""
+
+    name: str
+    domain: str = ""
+    industry: str = ""
+    employee_count: int = 0
+    location: str = ""
+    description: str = ""
+    founded_year: int = 0
+    annual_revenue: str = ""
+    technologies: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
+    linkedin_url: str = ""
+    website_url: str = ""
+    notes: str = ""
+    status: CompanyStatus = CompanyStatus.NEW
+    score: int = 0
+    id: str = field(default_factory=lambda: uuid4().hex[:12])
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    research: dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["research"] = json.dumps(d["research"])
+        d["tags"] = json.dumps(d["tags"])
+        d["technologies"] = json.dumps(d["technologies"])
+        d["keywords"] = json.dumps(d["keywords"])
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Company:
+        for key in ("research", "tags", "technologies", "keywords"):
+            if isinstance(d.get(key), str):
+                d[key] = json.loads(d[key])
+        d["status"] = CompanyStatus(d["status"])
+        return cls(**d)
+
+
 @dataclass
 class ICP:
     """Ideal Customer Profile — criteria for automated prospecting."""

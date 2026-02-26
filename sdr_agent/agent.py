@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 
 from .config import Config
-from .models import ICP, Channel, Lead, LeadStatus, Message, MessageType
+from .models import ICP, Channel, Company, CompanyStatus, Lead, LeadStatus, Message, MessageType
+from .modules.company_enricher import CompanyEnricher
+from .modules.company_prospector import CompanyProspector
+from .modules.company_scorer import CompanyScorer
 from .modules.enricher import LeadEnricher
 from .modules.outreach import OutreachEngine
 from .modules.prospector import Prospector
@@ -40,6 +43,9 @@ class SDRAgent:
         self.qualifier = LeadQualifier(self.config)
         self.scheduler = MeetingScheduler(self.config)
         self.sequencer = SequenceManager(self.config, self.db, self.outreach)
+        self.company_enricher = CompanyEnricher(self.config)
+        self.company_prospector = CompanyProspector(self.config)
+        self.company_scorer = CompanyScorer(self.config)
 
     # -- Lead Management --
 
@@ -324,6 +330,128 @@ class SDRAgent:
         self.db.update_lead_status(lead_id, LeadStatus.MEETING_BOOKED)
         return message
 
+    # -- Company Management --
+
+    def add_company(
+        self,
+        name: str,
+        domain: str = "",
+        industry: str = "",
+        employee_count: int = 0,
+        location: str = "",
+        description: str = "",
+        website_url: str = "",
+        linkedin_url: str = "",
+        notes: str = "",
+    ) -> Company:
+        """Add a new company to the pipeline."""
+        company = Company(
+            name=name,
+            domain=domain,
+            industry=industry,
+            employee_count=employee_count,
+            location=location,
+            description=description,
+            website_url=website_url,
+            linkedin_url=linkedin_url,
+            notes=notes,
+        )
+        self.db.save_company(company)
+        return company
+
+    def get_company(self, company_id: str) -> Company | None:
+        return self.db.get_company(company_id)
+
+    def list_companies(self, status: CompanyStatus | None = None) -> list[Company]:
+        return self.db.list_companies(status)
+
+    def search_companies(self, query: str) -> list[Company]:
+        return self.db.search_companies(query)
+
+    # -- Company Enrichment --
+
+    def enrich_company(self, company_id: str) -> tuple[Company, dict]:
+        """Enrich a company with data from Apollo.io.
+
+        Returns (updated_company, dict_of_updated_fields).
+        """
+        company = self.db.get_company(company_id)
+        if not company:
+            raise ValueError(f"Company {company_id} not found")
+
+        updated_fields = self.company_enricher.enrich_company(company)
+        if updated_fields:
+            score_result = self._auto_score_company(company)
+            if score_result:
+                updated_fields["auto_score"] = score_result
+            company.status = CompanyStatus.ENRICHED
+            company.updated_at = datetime.now().isoformat()
+            self.db.save_company(company)
+
+        return company, updated_fields
+
+    # -- Company Prospecting --
+
+    def prospect_companies(
+        self,
+        icp_name: str = "default",
+        count: int = 25,
+        page: int = 1,
+    ) -> list[Company]:
+        """Find new companies matching the saved ICP and add them to the pipeline."""
+        icp = self.db.get_icp(icp_name)
+        if not icp:
+            raise ValueError(
+                f"ICP '{icp_name}' not found. Create one first with set-icp."
+            )
+
+        orgs = self.company_prospector.search(icp, per_page=count, page=page)
+        companies = self.company_prospector.orgs_to_companies(orgs)
+
+        # Skip duplicates by domain
+        existing_domains = {
+            c.domain.lower()
+            for c in self.db.list_companies()
+            if c.domain
+        }
+
+        added: list[Company] = []
+        for company in companies:
+            if company.domain and company.domain.lower() in existing_domains:
+                continue
+            self.db.save_company(company)
+            added.append(company)
+            if company.domain:
+                existing_domains.add(company.domain.lower())
+
+        return added
+
+    # -- Company Scoring --
+
+    def score_company(self, company_id: str) -> dict:
+        """Score a company using AI + rule-based analysis.
+
+        Returns scoring details dict with score, reasoning, strengths, concerns.
+        """
+        company = self.db.get_company(company_id)
+        if not company:
+            raise ValueError(f"Company {company_id} not found")
+
+        result = self.company_scorer.score_company(company)
+        company.score = result["score"]
+        company.updated_at = datetime.now().isoformat()
+        self.db.save_company(company)
+        return result
+
+    def _auto_score_company(self, company: Company) -> dict | None:
+        """Auto-score a company after data changes. Returns score details or None."""
+        try:
+            result = self.company_scorer.score_company(company)
+            company.score = result["score"]
+            return result
+        except Exception:
+            return None
+
     # -- Pipeline Overview --
 
     def pipeline_summary(self) -> dict[str, int]:
@@ -333,6 +461,15 @@ class SDRAgent:
             leads = self.db.list_leads(status)
             if leads:
                 summary[status.value] = len(leads)
+        return summary
+
+    def company_pipeline_summary(self) -> dict[str, int]:
+        """Get a summary of companies by status."""
+        summary: dict[str, int] = {}
+        for status in CompanyStatus:
+            companies = self.db.list_companies(status)
+            if companies:
+                summary[status.value] = len(companies)
         return summary
 
     def close(self) -> None:
