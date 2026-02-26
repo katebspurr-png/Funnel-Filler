@@ -6,6 +6,7 @@ from datetime import datetime
 
 from .config import Config
 from .models import Channel, Lead, LeadStatus, Message, MessageType
+from .modules.enricher import LeadEnricher
 from .modules.outreach import OutreachEngine
 from .modules.qualifier import LeadQualifier
 from .modules.researcher import LeadResearcher
@@ -29,6 +30,7 @@ class SDRAgent:
     def __init__(self, config: Config | None = None):
         self.config = config or Config.from_env()
         self.db = Database(self.config.db_path)
+        self.enricher = LeadEnricher(self.config)
         self.researcher = LeadResearcher(self.config)
         self.outreach = OutreachEngine(self.config)
         self.qualifier = LeadQualifier(self.config)
@@ -88,6 +90,24 @@ class SDRAgent:
 
     def search_leads(self, query: str) -> list[Lead]:
         return self.db.search_leads(query)
+
+    # -- Enrichment --
+
+    def enrich_lead(self, lead_id: str) -> tuple[Lead, dict]:
+        """Enrich a lead with data from Apollo.io.
+
+        Returns (updated_lead, dict_of_updated_fields).
+        """
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        updated_fields = self.enricher.enrich_lead(lead)
+        if updated_fields:
+            lead.updated_at = datetime.now().isoformat()
+            self.db.save_lead(lead)
+
+        return lead, updated_fields
 
     # -- Research --
 

@@ -114,6 +114,45 @@ def search(query: str = typer.Argument(..., help="Search query")):
     agent.close()
 
 
+# -- Enrichment Commands --
+
+@app.command()
+def enrich(lead_id: str = typer.Argument(..., help="Lead ID to enrich")):
+    """Enrich a lead with real data from Apollo.io (email, title, company info, etc.)."""
+    agent = _get_agent()
+    with console.status("Enriching lead via Apollo..."):
+        lead, updated = agent.enrich_lead(lead_id)
+
+    if not updated:
+        console.print(f"[yellow]No new data found for {lead.name}.[/yellow]")
+        console.print("[dim]Tip: ensure the lead has a name + company or email for best results.[/dim]")
+        agent.close()
+        return
+
+    console.print(Panel(f"[bold]{lead.name}[/bold] @ {lead.company}", title="Enrichment Complete"))
+
+    # Show updated core fields
+    core_fields = {k: v for k, v in updated.items() if k != "apollo_data"}
+    if core_fields:
+        console.print("[bold]Updated fields:[/bold]")
+        for field_name, value in core_fields.items():
+            console.print(f"  [green]{field_name}:[/green] {value}")
+
+    # Show extra Apollo data
+    apollo_data = updated.get("apollo_data", {})
+    if apollo_data:
+        console.print("\n[bold]Additional data from Apollo:[/bold]")
+        for key, value in apollo_data.items():
+            if key == "organization":
+                console.print(f"  [cyan]organization:[/cyan]")
+                for org_key, org_val in value.items():
+                    console.print(f"    [dim]{org_key}:[/dim] {org_val}")
+            else:
+                console.print(f"  [cyan]{key}:[/cyan] {value}")
+
+    agent.close()
+
+
 # -- Research & Outreach Commands --
 
 @app.command()

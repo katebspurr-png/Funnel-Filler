@@ -52,6 +52,7 @@ class Config:
     """Global configuration for the SDR agent."""
 
     anthropic_api_key: str = ""
+    apollo_api_key: str = ""
     model: str = "claude-sonnet-4-6"
     db_path: str = "funnel_filler.db"
     company: CompanyProfile = field(default_factory=CompanyProfile)
@@ -64,6 +65,7 @@ class Config:
         _load_env()
         return cls(
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
+            apollo_api_key=os.getenv("APOLLO_API_KEY", ""),
             model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
             db_path=os.getenv("DB_PATH", "funnel_filler.db"),
             company=CompanyProfile(
