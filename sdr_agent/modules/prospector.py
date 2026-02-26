@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 import urllib.request
 import urllib.error
 from typing import Any
@@ -37,29 +38,24 @@ class Prospector:
                 "Set it in your .env file."
             )
 
-        payload: dict[str, Any] = {
-            "api_key": self.api_key,
-            "page": page,
-            "per_page": per_page,
-        }
+        # Build query params — Apollo api_search uses array[] notation
+        params: list[tuple[str, str]] = [
+            ("page", str(page)),
+            ("per_page", str(per_page)),
+        ]
 
-        if icp.titles:
-            payload["person_titles"] = icp.titles
-        if icp.seniorities:
-            payload["person_seniorities"] = icp.seniorities
-        if icp.locations:
-            payload["person_locations"] = icp.locations
-        if icp.industries:
-            payload["organization_industry_tag_ids"] = icp.industries
-        if icp.company_sizes:
-            payload["organization_num_employees_ranges"] = icp.company_sizes
-        if icp.keywords:
-            payload["q_keywords"] = " ".join(icp.keywords)
+        for title in icp.titles:
+            params.append(("person_titles[]", title))
+        for loc in icp.locations:
+            params.append(("person_locations[]", loc))
+        for domain in icp.keywords:
+            params.append(("q_organization_domains_list[]", domain))
 
-        data = json.dumps(payload).encode("utf-8")
+        query_string = urllib.parse.urlencode(params)
+        url = f"{APOLLO_PEOPLE_SEARCH_URL}?{query_string}"
+
         req = urllib.request.Request(
-            APOLLO_PEOPLE_SEARCH_URL,
-            data=data,
+            url,
             headers={
                 "Content-Type": "application/json",
                 "Cache-Control": "no-cache",
