@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "funnel-filler"
+version = "0.1.0"
+description = "AI-powered SDR agent for outbound prospecting and lead qualification"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.39.0",
+    "pydantic>=2.0",
+    "aiohttp>=3.9",
+    "jinja2>=3.1",
+    "python-dotenv>=1.0",
+    "rich>=13.0",
+    "typer>=0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+email = [
+    "aiosmtplib>=3.0",
+]
+crm = [
+    "hubspot-api-client>=8.0",
+]
+
+[project.scripts]
+funnel-filler = "sdr_agent.cli:app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

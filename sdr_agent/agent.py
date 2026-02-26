@@ -1,0 +1,223 @@
+"""Main SDR agent orchestrator — ties all modules together."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from .config import Config
+from .models import Channel, Lead, LeadStatus, Message, MessageType
+from .modules.outreach import OutreachEngine
+from .modules.qualifier import LeadQualifier
+from .modules.researcher import LeadResearcher
+from .modules.scheduler import MeetingScheduler
+from .modules.sequencer import SequenceManager
+from .storage import Database
+
+
+class SDRAgent:
+    """The main SDR agent that orchestrates the full outbound sales workflow.
+
+    Workflow:
+        1. Add leads (manually or from CSV)
+        2. Research leads to gather context
+        3. Generate personalized outreach
+        4. Start automated follow-up sequences
+        5. Analyze responses and qualify leads
+        6. Book meetings for qualified leads
+    """
+
+    def __init__(self, config: Config | None = None):
+        self.config = config or Config.from_env()
+        self.db = Database(self.config.db_path)
+        self.researcher = LeadResearcher(self.config)
+        self.outreach = OutreachEngine(self.config)
+        self.qualifier = LeadQualifier(self.config)
+        self.scheduler = MeetingScheduler(self.config)
+        self.sequencer = SequenceManager(self.config, self.db, self.outreach)
+
+    # -- Lead Management --
+
+    def add_lead(
+        self,
+        name: str,
+        email: str = "",
+        company: str = "",
+        title: str = "",
+        industry: str = "",
+        linkedin_url: str = "",
+        notes: str = "",
+    ) -> Lead:
+        """Add a new lead to the pipeline."""
+        lead = Lead(
+            name=name,
+            email=email,
+            company=company,
+            title=title,
+            industry=industry,
+            linkedin_url=linkedin_url,
+            notes=notes,
+        )
+        self.db.save_lead(lead)
+        return lead
+
+    def import_leads_from_csv(self, csv_path: str) -> list[Lead]:
+        """Import leads from a CSV file. Expected columns: name, email, company, title, industry."""
+        import csv
+
+        leads = []
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                lead = self.add_lead(
+                    name=row.get("name", ""),
+                    email=row.get("email", ""),
+                    company=row.get("company", ""),
+                    title=row.get("title", ""),
+                    industry=row.get("industry", ""),
+                    linkedin_url=row.get("linkedin_url", ""),
+                    notes=row.get("notes", ""),
+                )
+                leads.append(lead)
+        return leads
+
+    def get_lead(self, lead_id: str) -> Lead | None:
+        return self.db.get_lead(lead_id)
+
+    def list_leads(self, status: LeadStatus | None = None) -> list[Lead]:
+        return self.db.list_leads(status)
+
+    def search_leads(self, query: str) -> list[Lead]:
+        return self.db.search_leads(query)
+
+    # -- Research --
+
+    def research_lead(self, lead_id: str) -> Lead:
+        """Research a lead and enrich their profile."""
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        self.db.update_lead_status(lead_id, LeadStatus.RESEARCHING)
+        research = self.researcher.research_lead(lead)
+        lead.research = research
+        lead.status = LeadStatus.OUTREACH_PENDING
+        lead.updated_at = datetime.now().isoformat()
+        self.db.save_lead(lead)
+        return lead
+
+    # -- Outreach --
+
+    def generate_outreach(
+        self, lead_id: str, channel: Channel = Channel.EMAIL
+    ) -> Message:
+        """Generate an initial outreach message for a lead."""
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        message = self.outreach.generate_initial_outreach(lead, channel)
+        self.db.save_message(message)
+        return message
+
+    def start_sequence(self, lead_id: str) -> str:
+        """Start an automated follow-up sequence for a lead."""
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        sequence = self.sequencer.create_sequence(lead)
+        return sequence.id
+
+    def run_sequences(self) -> list[tuple[Lead, Message]]:
+        """Check and execute any due sequence steps."""
+        return self.sequencer.run_due_sequences()
+
+    # -- Response Handling --
+
+    def handle_reply(self, lead_id: str, reply_text: str) -> dict:
+        """Process a prospect's reply: analyze, qualify, and recommend next action."""
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        # Save the inbound message
+        inbound = Message(
+            lead_id=lead_id,
+            channel=Channel.EMAIL,
+            message_type=MessageType.REPLY,
+            body=reply_text,
+            is_inbound=True,
+            sent_at=datetime.now().isoformat(),
+        )
+        self.db.save_message(inbound)
+        self.db.update_lead_status(lead_id, LeadStatus.REPLIED)
+
+        # Pause any active sequences
+        for seq in self.db.get_active_sequences():
+            if seq.lead_id == lead_id:
+                self.sequencer.pause_sequence(seq.id)
+
+        # Analyze the response
+        messages = self.db.get_messages_for_lead(lead_id)
+        outbound_messages = [m for m in messages if not m.is_inbound]
+        last_outbound = outbound_messages[-1] if outbound_messages else None
+
+        analysis = {}
+        if last_outbound:
+            analysis = self.qualifier.analyze_response(last_outbound, reply_text)
+
+        # Qualify the lead
+        qualification = self.qualifier.qualify_lead(lead, messages)
+
+        # Update lead score
+        try:
+            lead.score = int(qualification.get("score", "0"))
+        except ValueError:
+            lead.score = 0
+
+        # Determine next action
+        next_action = qualification.get("next_action", "FOLLOW_UP")
+        if next_action == "BOOK_MEETING":
+            self.db.update_lead_status(lead_id, LeadStatus.QUALIFIED)
+        elif next_action == "DISQUALIFY":
+            self.db.update_lead_status(lead_id, LeadStatus.DISQUALIFIED)
+
+        lead.updated_at = datetime.now().isoformat()
+        self.db.save_lead(lead)
+
+        return {
+            "analysis": analysis,
+            "qualification": qualification,
+            "next_action": next_action,
+            "score": lead.score,
+        }
+
+    # -- Meeting Booking --
+
+    def request_meeting(
+        self, lead_id: str, channel: Channel = Channel.EMAIL
+    ) -> Message:
+        """Generate and save a meeting request message."""
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        messages = self.db.get_messages_for_lead(lead_id)
+        message = self.scheduler.generate_meeting_request(lead, messages, channel)
+        self.db.save_message(message)
+        self.db.update_lead_status(lead_id, LeadStatus.MEETING_BOOKED)
+        return message
+
+    # -- Pipeline Overview --
+
+    def pipeline_summary(self) -> dict[str, int]:
+        """Get a summary of leads by status."""
+        summary: dict[str, int] = {}
+        for status in LeadStatus:
+            leads = self.db.list_leads(status)
+            if leads:
+                summary[status.value] = len(leads)
+        return summary
+
+    def close(self) -> None:
+        self.db.close()
