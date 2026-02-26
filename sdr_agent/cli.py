@@ -225,6 +225,56 @@ def prospect(
     agent.close()
 
 
+# -- Scoring Commands --
+
+@app.command()
+def score(lead_id: str = typer.Argument(..., help="Lead ID to score")):
+    """Score a lead using AI analysis + rule-based adjustments (0-100)."""
+    agent = _get_agent()
+    with console.status("Scoring lead..."):
+        result = agent.score_lead(lead_id)
+
+    lead = agent.get_lead(lead_id)
+    name = lead.name if lead else lead_id
+
+    # Score color
+    s = result["score"]
+    if s >= 80:
+        color = "bold green"
+    elif s >= 60:
+        color = "green"
+    elif s >= 40:
+        color = "yellow"
+    else:
+        color = "red"
+
+    console.print(Panel(
+        f"[{color}]{s}/100[/{color}]  (AI: {result['ai_score']} + Rules: {result['rule_adjustment']:+d})",
+        title=f"Score for {name}",
+    ))
+
+    if result.get("reasoning"):
+        console.print(f"\n[bold]Reasoning:[/bold] {result['reasoning']}")
+
+    if result.get("strengths"):
+        console.print("\n[bold]Strengths:[/bold]")
+        for item in result["strengths"]:
+            console.print(f"  [green]+[/green] {item}")
+
+    if result.get("concerns"):
+        console.print("\n[bold]Concerns:[/bold]")
+        for item in result["concerns"]:
+            console.print(f"  [red]-[/red] {item}")
+
+    if result.get("rule_details"):
+        console.print("\n[bold]Rule adjustments:[/bold]")
+        for rule in result["rule_details"]:
+            sign = "+" if rule["points"] > 0 else ""
+            console.print(f"  [dim]{sign}{rule['points']}[/dim] {rule['rule']}")
+
+    agent.close()
+
+
 # -- Enrichment Commands --
 
 @app.command()
@@ -260,6 +310,12 @@ def enrich(lead_id: str = typer.Argument(..., help="Lead ID to enrich")):
                     console.print(f"    [dim]{org_key}:[/dim] {org_val}")
             else:
                 console.print(f"  [cyan]{key}:[/cyan] {value}")
+
+    # Show auto-score if it ran
+    auto_score = updated.get("auto_score")
+    if auto_score:
+        s = auto_score["score"]
+        console.print(f"\n[bold]Auto-score:[/bold] {s}/100 — {auto_score.get('reasoning', '')}")
 
     agent.close()
 

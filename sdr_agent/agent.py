@@ -11,6 +11,7 @@ from .modules.outreach import OutreachEngine
 from .modules.prospector import Prospector
 from .modules.qualifier import LeadQualifier
 from .modules.researcher import LeadResearcher
+from .modules.scorer import LeadScorer
 from .modules.scheduler import MeetingScheduler
 from .modules.sequencer import SequenceManager
 from .storage import Database
@@ -34,6 +35,7 @@ class SDRAgent:
         self.enricher = LeadEnricher(self.config)
         self.prospector = Prospector(self.config)
         self.researcher = LeadResearcher(self.config)
+        self.scorer = LeadScorer(self.config)
         self.outreach = OutreachEngine(self.config)
         self.qualifier = LeadQualifier(self.config)
         self.scheduler = MeetingScheduler(self.config)
@@ -93,6 +95,32 @@ class SDRAgent:
     def search_leads(self, query: str) -> list[Lead]:
         return self.db.search_leads(query)
 
+    # -- Scoring --
+
+    def score_lead(self, lead_id: str) -> dict:
+        """Score a lead using AI + rule-based analysis.
+
+        Returns scoring details dict with score, reasoning, strengths, concerns.
+        """
+        lead = self.db.get_lead(lead_id)
+        if not lead:
+            raise ValueError(f"Lead {lead_id} not found")
+
+        result = self.scorer.score_lead(lead)
+        lead.score = result["score"]
+        lead.updated_at = datetime.now().isoformat()
+        self.db.save_lead(lead)
+        return result
+
+    def _auto_score(self, lead: Lead) -> dict | None:
+        """Auto-score a lead after data changes. Returns score details or None."""
+        try:
+            result = self.scorer.score_lead(lead)
+            lead.score = result["score"]
+            return result
+        except Exception:
+            return None
+
     # -- Enrichment --
 
     def enrich_lead(self, lead_id: str) -> tuple[Lead, dict]:
@@ -106,6 +134,9 @@ class SDRAgent:
 
         updated_fields = self.enricher.enrich_lead(lead)
         if updated_fields:
+            score_result = self._auto_score(lead)
+            if score_result:
+                updated_fields["auto_score"] = score_result
             lead.updated_at = datetime.now().isoformat()
             self.db.save_lead(lead)
 
@@ -176,7 +207,7 @@ class SDRAgent:
     # -- Research --
 
     def research_lead(self, lead_id: str) -> Lead:
-        """Research a lead and enrich their profile."""
+        """Research a lead and enrich their profile, then auto-score."""
         lead = self.db.get_lead(lead_id)
         if not lead:
             raise ValueError(f"Lead {lead_id} not found")
@@ -185,6 +216,7 @@ class SDRAgent:
         research = self.researcher.research_lead(lead)
         lead.research = research
         lead.status = LeadStatus.OUTREACH_PENDING
+        self._auto_score(lead)
         lead.updated_at = datetime.now().isoformat()
         self.db.save_lead(lead)
         return lead
